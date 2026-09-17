@@ -1,0 +1,49 @@
+name: AHUT nightly 21:35
+
+on:
+  schedule:
+    - cron: '35 13 * * *' # UTC 13:35 = 北京时间 21:35
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check 仅检查配置；sign-in 提交签到（北京时间21:35以后）'
+        type: choice
+        options:
+          - check
+          - sign-in
+        default: check
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ahut-nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Check configuration
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'check'
+        env:
+          AHUT_STUDENT_ID: ${{ secrets.AHUT_STUDENT_ID }}
+          AHUT_PASSWORD: ${{ secrets.AHUT_PASSWORD }}
+        run: python runner.py --check-config
+      - name: Run nightly sign-in
+        if: github.event_name == 'schedule' || inputs.mode == 'sign-in'
+        env:
+          AHUT_STUDENT_ID: ${{ secrets.AHUT_STUDENT_ID }}
+          AHUT_PASSWORD: ${{ secrets.AHUT_PASSWORD }}
+        run: python runner.py
