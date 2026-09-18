@@ -1,0 +1,14 @@
+name: Schedule test
+
+on:
+  schedule:
+    - cron: '25,35,45 14 18 9 *'
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Scheduled trigger works"
