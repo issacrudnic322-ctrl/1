@@ -257,12 +257,13 @@ def generate_data(user: User) -> dict:
         "scanType": "",
         "roomId": user.room_id,
         "signKey": user.room_id,
-        "signCode": generate_signCode(int(time.time())),
+        "signCode": generate_signCode(int(time.time() * 1000)),
     }
 
 def _try_json_loads(text: str):
     try:
-        return json.loads(text)
+        value = json.loads(text)
+        return value if isinstance(value, dict) else None
     except Exception:
         return None
 
@@ -335,7 +336,7 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             headers=generate_header(user)
         )
         logger.debug(f'{user.student_Id} 获取token返回信息 {token_result}')
-        if 'refresh_token' in token_result:
+        if status == 200 and isinstance(token_result.get('refresh_token'), str) and token_result['refresh_token']:
             user.token = token_result['refresh_token']
             user.username = token_result.get('userName', user.username)
             logger.info(f"成功为 {user.username}({user.student_Id}) 获取到token")
@@ -356,7 +357,7 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             headers=generate_header(user, WEB_DICT['task_id_api'])
         )
         logger.debug(f"{user.username}({user.student_Id}) 获取taskId返回信息 {task_result}")
-        if task_result.get('code') == 200:
+        if status == 200 and task_result.get('code') == 200:
             records = task_result.get('data', {}).get('records', [{}])
             task_id = (records[0] or {}).get("taskId") if records else None
             if task_id:
@@ -385,7 +386,7 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             headers=generate_header(user, url)
         )
         logger.debug(f"{user.username}({user.student_Id}) 获取微信接口配置返回信息 {auth_result}")
-        if auth_result.get('code') == 200:
+        if status == 200 and auth_result.get('code') == 200:
             logger.info(f"为 {user.username}({user.student_Id}) 获取微信接口配置信息成功")
             return {'success': True, 'msg': '', 'step': step + 1}
         else:
@@ -429,11 +430,19 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             headers=generate_header(user, url)
         )
         logger.debug(f"{user.username}({user.student_Id}) 获取签到位置返回信息 {location_result}")
-        if location_result.get('code') == 200:
+        if status == 200 and location_result.get('code') == 200:
             vo = location_result.get('data', {}).get('dormitoryRegisterVO', {}) or {}
-            user.latitude = float(vo.get('locationLat', 0))
-            user.longitude = float(vo.get('locationLng', 0))
-            user.room_id = vo.get('roomId', "")
+            try:
+                latitude = float(vo['locationLat'])
+                longitude = float(vo['locationLng'])
+                room_id = vo['roomId']
+            except (KeyError, TypeError, ValueError):
+                return {'success': False, 'msg': '宿舍信息无效', 'step': step}
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180) or not latitude or not longitude or not room_id:
+                return {'success': False, 'msg': '宿舍信息无效', 'step': step}
+            user.latitude = latitude
+            user.longitude = longitude
+            user.room_id = room_id
             logger.info(f"为 {user.username}({user.student_Id}) 获取签到位置成功")
             return {'success': True, 'msg': '', 'step': step + 1}
         else:
@@ -442,7 +451,7 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
                 logger.warning(f"{user.username}({user.student_Id}) Token失效或未授权，将重试获取Token。")
                 user.token = ''
                 return {'success': False, 'msg': 'token失效', 'step': 0}
-            return {"success": False, "msg": "", "step": step + 1}
+            return {"success": False, "msg": "获取宿舍信息失败", "step": step}
     # 进行晚寝签到
     if step == 5:
         logger.info(f"开始为 {user.username}({user.student_Id}) 晚寝签到")
@@ -464,7 +473,8 @@ def sign_in_by_step(user: User, step: int, debug: bool = False) -> dict:
             )
         ):
             logger.info(f"为 {user.username}({user.student_Id}) 晚寝签到成功")
-            return {'success': True, 'msg': '', 'step': step + 1}
+            outcome = 'already_signed' if '您今天已完成签到' in msg else 'api_confirmed'
+            return {'success': True, 'msg': '', 'step': step + 1, 'outcome': outcome}
         else:
             msg = sign_in_result.get('msg', '') or ''
             if ("请求未授权" in msg) or ("缺失身份信息" in msg) or ('鉴权失败' in msg):
@@ -488,8 +498,11 @@ def sign_in(user: User, debug: bool = False):
     """
     logger.info(f"为 {user.username}({user.student_Id}) 尝试执行签到")
     step, retries, token_retries = 0, 0, 0
+    last_step = 0
+    result = {}
     error_history = set()
     while retries < MAX_RETRIES and 0 <= step < 6:
+        last_step = step
         result = sign_in_by_step(user, step, debug)
         step = result['step']
         if not result['success']:
@@ -500,9 +513,8 @@ def sign_in(user: User, debug: bool = False):
                 retries += 1
         # 添加随机延时，模拟手动操作
         time.sleep(round(random.uniform(0.5, 2), 2))
-    if step == 6:
-        return {'success': True, 'data': error_history}
+    if step == 6 and result.get('success') is True and result.get('outcome') in ('api_confirmed', 'already_signed'):
+        return {'success': True, 'outcome': result['outcome'], 'data': error_history}
     else:
-        return {'success': False, 'data': error_history}
-
+        return {'success': False, 'step': last_step, 'data': error_history}
 
